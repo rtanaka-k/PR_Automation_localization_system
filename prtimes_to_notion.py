@@ -6,7 +6,7 @@ Notion DB「KRAFTON Japan ニュースリリース DB」に保存します。
 
 使い方:
   1. 依存パッケージをインストール
-     pip install feedparser requests beautifulsoup4 notion-client
+     pip install requests beautifulsoup4 notion-client
 
   2. Notion Integration Token を環境変数に設定
      Windows PowerShell:
@@ -31,10 +31,8 @@ import os
 import sys
 import time
 import argparse
-import feedparser
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timezone
 from notion_client import Client
 
 # ============================================================
@@ -44,8 +42,12 @@ NOTION_DATABASE_ID = "7606be38ff494d1f84902f8f82ebfee0"
 # notion-client 3.x（Notion API 2025-09-03）はクエリがdata_source単位になったため、
 # databases.query()は廃止され、data_sources.query()にdata_source_idを渡す必要がある。
 NOTION_DATA_SOURCE_ID = "68f52f52-f7dc-4ab4-9941-61c7c7d7f6e7"
-PRTIMES_RSS_URL = "https://prtimes.jp/rss/company/82433/"
-PRTIMES_COMPANY_URL = "https://prtimes.jp/main/html/searchrlp/company_id/82433"
+
+PRTIMES_COMPANY_ID = 82433
+# 公開RSS(/rss/company/{id}/)は廃止済み(404)。企業ページがJSレンダリングのSPAになった際に
+# 内部的に呼んでいる非公開だが認証不要のJSON APIから一覧を取得する(Playwrightで通信を観察して特定)。
+PRTIMES_PRESS_RELEASES_API = f"https://prtimes.jp/api/company_content.php/companies/{PRTIMES_COMPANY_ID}/press_releases"
+PRTIMES_PAGE_SIZE = 100
 
 # タイトルキーワードからタイトルタグを自動付与
 TITLE_TAG_RULES = {
@@ -98,11 +100,11 @@ def fetch_article_body(url: str) -> str:
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # PR Timesの本文セレクタ
+        # PR Timesの本文セレクタ（press-release-body-v3-0-0は記事詳細ページの本文専用クラス。
+        # CSS Modulesのハッシュ付きクラス名と違い再デプロイで変わりにくいため優先する）
         body_el = (
-            soup.select_one("div.articleBody")
-            or soup.select_one("div.press-release-detail__body")
-            or soup.select_one("section.press-release-detail")
+            soup.select_one("div.press-release-body-v3-0-0")
+            or soup.select_one("article")
         )
         if body_el:
             return body_el.get_text(separator="\n", strip=True)
@@ -112,12 +114,41 @@ def fetch_article_body(url: str) -> str:
         return ""
 
 
-def parse_published_date(entry) -> str | None:
-    """RSSエントリから配信日をISO 8601形式で取得"""
-    if hasattr(entry, "published_parsed") and entry.published_parsed:
-        dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-        return dt.date().isoformat()
-    return None
+def fetch_press_releases(max_count: int = 0) -> list[dict]:
+    """company_content.php APIから全リリースのメタデータ（タイトル・URL・配信日）を取得する。
+
+    新しい順に返る。max_countを指定した場合はその件数で打ち切る（0=全件）。
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    entries = []
+    skip = 0
+    total = None
+
+    while total is None or skip < total:
+        if max_count and len(entries) >= max_count:
+            break
+        r = requests.get(
+            PRTIMES_PRESS_RELEASES_API,
+            headers=headers,
+            params={"skip": skip, "limit": PRTIMES_PAGE_SIZE},
+            timeout=15,
+        )
+        r.raise_for_status()
+        payload = r.json()["data"]
+        total = payload["total"]
+
+        for item in payload["data"]:
+            entries.append({
+                "title": item.get("title", "（タイトルなし）"),
+                "link": "https://prtimes.jp" + item["url"],
+                "published_date": (item.get("release_comple_date") or "")[:10] or None,
+            })
+
+        skip += PRTIMES_PAGE_SIZE
+
+    return entries[:max_count] if max_count else entries
 
 
 def get_existing_urls(notion: Client) -> set[str]:
@@ -221,19 +252,16 @@ def main():
 
     notion = Client(auth=token)
 
-    print("📡 PR Times RSSを取得中...")
-    feed = feedparser.parse(PRTIMES_RSS_URL)
-    entries = feed.entries
+    print("📡 PR Timesからリリース一覧を取得中...")
+    entries = fetch_press_releases(max_count=args.max)
 
     if not entries:
-        print("⚠️  RSSエントリが0件です。company_idを確認してください")
-        print(f"   URL: {PRTIMES_RSS_URL}")
+        print("⚠️  リリースが0件です。company_idを確認してください")
+        print(f"   API: {PRTIMES_PRESS_RELEASES_API}")
         sys.exit(1)
 
     print(f"✅ {len(entries)}件のリリースを取得")
-
     if args.max > 0:
-        entries = entries[: args.max]
         print(f"   （上限指定により {args.max} 件に絞り込み）")
 
     # 既存URL取得（重複チェック用）
@@ -251,7 +279,7 @@ def main():
     for i, entry in enumerate(entries, 1):
         title = entry.get("title", "（タイトルなし）")
         url = entry.get("link", "")
-        published_date = parse_published_date(entry)
+        published_date = entry.get("published_date")
 
         print(f"\n[{i}/{len(entries)}] {title}")
 
