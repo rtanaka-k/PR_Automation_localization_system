@@ -41,6 +41,9 @@ from notion_client import Client
 # 設定
 # ============================================================
 NOTION_DATABASE_ID = "7606be38ff494d1f84902f8f82ebfee0"
+# notion-client 3.x（Notion API 2025-09-03）はクエリがdata_source単位になったため、
+# databases.query()は廃止され、data_sources.query()にdata_source_idを渡す必要がある。
+NOTION_DATA_SOURCE_ID = "68f52f52-f7dc-4ab4-9941-61c7c7d7f6e7"
 PRTIMES_RSS_URL = "https://prtimes.jp/rss/company/82433/"
 PRTIMES_COMPANY_URL = "https://prtimes.jp/main/html/searchrlp/company_id/82433"
 
@@ -123,13 +126,13 @@ def get_existing_urls(notion: Client) -> set[str]:
     cursor = None
     while True:
         params = {
-            "database_id": NOTION_DATABASE_ID,
+            "data_source_id": NOTION_DATA_SOURCE_ID,
             "page_size": 100,
             "filter": {"property": "PR Times URL", "url": {"is_not_empty": True}},
         }
         if cursor:
             params["start_cursor"] = cursor
-        res = notion.databases.query(**params)
+        res = notion.data_sources.query(**params)
         for page in res["results"]:
             url = page["properties"].get("PR Times URL", {}).get("url")
             if url:

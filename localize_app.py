@@ -75,6 +75,10 @@ check_auth()
 # ============================================================
 NOTION_RELEASE_DB_ID   = "7606be38ff494d1f84902f8f82ebfee0"
 NOTION_GLOSSARY_DB_ID  = "8959e88bcfe34936a59cc82232215266"
+# notion-client 3.x（Notion API 2025-09-03）はクエリがdata_source単位になったため、
+# databases.query()は廃止され、data_sources.query()にdata_source_idを渡す必要がある。
+NOTION_RELEASE_DATA_SOURCE_ID  = "68f52f52-f7dc-4ab4-9941-61c7c7d7f6e7"
+NOTION_GLOSSARY_DATA_SOURCE_ID = "0d2447b5-6fcf-414b-a3b4-88dad64f6b8b"
 CLAUDE_MODEL           = "claude-sonnet-4-6"
 
 TITLE_TAG_OPTIONS  = ["PUBG", "inZOI", "Subnautica", "KRAFTON", "その他"]
@@ -92,13 +96,13 @@ def fetch_approved_glossary(_token: str) -> list[dict]:
     cursor = None
     while True:
         params = dict(
-            database_id=NOTION_GLOSSARY_DB_ID,
+            data_source_id=NOTION_GLOSSARY_DATA_SOURCE_ID,
             page_size=100,
             filter={"property": "ステータス", "select": {"equals": "approved"}},
         )
         if cursor:
             params["start_cursor"] = cursor
-        res = notion.databases.query(**params)
+        res = notion.data_sources.query(**params)
         for page in res["results"]:
             props = page["properties"]
             ja   = _rich_text_value(props.get("日本語表記", {}))
