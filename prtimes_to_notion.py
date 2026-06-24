@@ -174,6 +174,28 @@ def get_existing_urls(notion: Client) -> set[str]:
     return urls
 
 
+def chunk_text_for_notion(text: str, limit: int = 2000) -> list[str]:
+    """Notionのrich_text文字数制限（UTF-16コードユニット数）に基づいてテキストを分割する。
+
+    Pythonのlen()はUnicodeコードポイント数を数えるが、絵文字等のサロゲートペア文字は
+    UTF-16では2ユニット消費するため、コードポイント数で機械的に切ると2000を超える場合がある。
+    """
+    chunks = []
+    current: list[str] = []
+    current_len = 0
+    for ch in text:
+        ch_len = 2 if ord(ch) > 0xFFFF else 1
+        if current_len + ch_len > limit and current:
+            chunks.append("".join(current))
+            current = []
+            current_len = 0
+        current.append(ch)
+        current_len += ch_len
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
 def create_notion_page(notion: Client, entry: dict, body: str, dry_run: bool = False):
     """Notionにページを作成"""
     title_ja = entry["title"]
@@ -210,8 +232,7 @@ def create_notion_page(notion: Client, entry: dict, body: str, dry_run: bool = F
 
     # 本文をページのブロックとして追加
     if body:
-        # 2000文字ずつ分割（Notionのブロック文字数制限対応）
-        chunks = [body[i:i+1999] for i in range(0, len(body), 1999)]
+        chunks = chunk_text_for_notion(body)
         children = []
 
         # 見出し

@@ -147,6 +147,28 @@ def save_pending_terms(notion: Client, terms: list[dict], source_page_url: str):
         )
 
 
+def chunk_text_for_notion(text: str, limit: int = 2000) -> list[str]:
+    """Notionのrich_text文字数制限（UTF-16コードユニット数）に基づいてテキストを分割する。
+
+    Pythonのlen()はUnicodeコードポイント数を数えるが、絵文字等のサロゲートペア文字は
+    UTF-16では2ユニット消費するため、コードポイント数で機械的に切ると2000を超える場合がある。
+    """
+    chunks = []
+    current: list[str] = []
+    current_len = 0
+    for ch in text:
+        ch_len = 2 if ord(ch) > 0xFFFF else 1
+        if current_len + ch_len > limit and current:
+            chunks.append("".join(current))
+            current = []
+            current_len = 0
+        current.append(ch)
+        current_len += ch_len
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
 def save_release_to_notion(
     notion: Client,
     title_ja: str,
@@ -192,7 +214,7 @@ def save_release_to_notion(
             "object": "block", "type": "heading_2",
             "heading_2": {"rich_text": [{"text": {"content": heading}}]},
         })
-        for chunk in [text[i:i+1999] for i in range(0, len(text), 1999)]:
+        for chunk in chunk_text_for_notion(text):
             blocks.append({
                 "object": "block", "type": "paragraph",
                 "paragraph": {"rich_text": [{"text": {"content": chunk}}]},
