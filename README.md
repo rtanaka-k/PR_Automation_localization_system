@@ -1,0 +1,2 @@
+# PR_Automation_localization_system
+自動ローカライズ
