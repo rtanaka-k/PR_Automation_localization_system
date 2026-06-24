@@ -1,0 +1,12 @@
+# Streamlit secrets（絶対にコミットしない）
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
