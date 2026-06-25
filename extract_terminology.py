@@ -243,7 +243,7 @@ def extract_terms_and_style(text_ja: str, text_kr: str = "", text_en: str = "",
 
     res = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
     return parse_extraction_response(res.content[0].text)
@@ -291,7 +291,7 @@ def consolidate_style_rules(candidates: list[dict], api_key: str) -> list[dict]:
     prompt = build_consolidation_prompt(candidates)
     res = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=2048,
+        max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
     consolidated = parse_consolidation_response(res.content[0].text)
