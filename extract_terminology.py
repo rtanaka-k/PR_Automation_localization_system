@@ -309,3 +309,105 @@ def consolidate_style_rules(candidates: list[dict], api_key: str) -> list[dict]:
             "sources": sources,
         })
     return rules
+
+
+# ============================================================
+# 「KRAFTON Japan 表記ルール」ページ
+# ============================================================
+
+def find_style_rules_page(notion: Client) -> str | None:
+    """ワークスペース内から「KRAFTON Japan 表記ルール」ページを完全一致で検索する"""
+    res = notion.search(query=STYLE_RULES_PAGE_TITLE, filter={"property": "object", "value": "page"})
+    for page in res.get("results", []):
+        title_items = page.get("properties", {}).get("title", {}).get("title", [])
+        title_text = "".join(t.get("plain_text", "") for t in title_items)
+        if title_text == STYLE_RULES_PAGE_TITLE:
+            return page["id"]
+    return None
+
+
+def find_heading_block_id(notion: Client, page_id: str, heading_text: str) -> str | None:
+    """ページ内のheading_2ブロックをテキスト完全一致で検索する"""
+    cursor = None
+    while True:
+        params = {"block_id": page_id, "page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        res = notion.blocks.children.list(**params)
+        for block in res["results"]:
+            if block["type"] == "heading_2":
+                text_items = block["heading_2"].get("rich_text", [])
+                text = "".join(t.get("plain_text", "") for t in text_items)
+                if text == heading_text:
+                    return block["id"]
+        if not res.get("has_more"):
+            break
+        cursor = res["next_cursor"]
+    return None
+
+
+def create_style_rules_page(notion: Client) -> tuple[str, str]:
+    """「KRAFTON Japan 表記ルール」ページをワークスペース直下に新規作成する"""
+    page = notion.pages.create(
+        parent={"type": "workspace", "workspace": True},
+        properties={"title": {"title": [{"text": {"content": STYLE_RULES_PAGE_TITLE}}]}},
+    )
+    page_id = page["id"]
+    res = notion.blocks.children.append(
+        block_id=page_id,
+        children=[
+            {"object": "block", "type": "heading_2",
+             "heading_2": {"rich_text": [{"text": {"content": CONFIRM_HEADING}}]}},
+            {"object": "block", "type": "heading_2",
+             "heading_2": {"rich_text": [{"text": {"content": APPROVED_HEADING}}]}},
+        ],
+    )
+    confirm_heading_id = res["results"][0]["id"]
+    return page_id, confirm_heading_id
+
+
+def get_or_create_style_rules_page(notion: Client) -> tuple[str, str]:
+    """「KRAFTON Japan 表記ルール」ページを取得する。なければ新規作成する。"""
+    page_id = find_style_rules_page(notion)
+    if page_id:
+        confirm_id = find_heading_block_id(notion, page_id, CONFIRM_HEADING)
+        return page_id, confirm_id
+    return create_style_rules_page(notion)
+
+
+def get_existing_rule_texts(notion: Client, page_id: str) -> set[str]:
+    """ページ内の既存箇条書きからルール文（1行目）の集合を取得する（要確認・承認済み両方）"""
+    texts = set()
+    cursor = None
+    while True:
+        params = {"block_id": page_id, "page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        res = notion.blocks.children.list(**params)
+        for block in res["results"]:
+            if block["type"] == "bulleted_list_item":
+                items = block["bulleted_list_item"].get("rich_text", [])
+                full_text = "".join(t.get("plain_text", "") for t in items)
+                texts.add(extract_rule_statement(full_text))
+        if not res.get("has_more"):
+            break
+        cursor = res["next_cursor"]
+    return texts
+
+
+def append_style_rules_to_page(notion: Client, page_id: str, confirm_heading_id: str,
+                                 rules: list[dict], existing_texts: set[str]) -> int:
+    """重複しない表記ルールを「要確認」見出しの直後にまとめて追記する"""
+    new_blocks = []
+    for rule in rules:
+        if rule["rule"] in existing_texts:
+            continue
+        block_text = format_rule_block_text(rule)
+        new_blocks.append({
+            "object": "block", "type": "bulleted_list_item",
+            "bulleted_list_item": {"rich_text": [{"text": {"content": block_text}}]},
+        })
+    if not new_blocks:
+        return 0
+    notion.blocks.children.append(block_id=page_id, children=new_blocks, after=confirm_heading_id)
+    return len(new_blocks)

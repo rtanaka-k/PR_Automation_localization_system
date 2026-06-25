@@ -8,6 +8,12 @@ from extract_terminology import (
     ensure_category_property,
     EXTRACTED_PROPERTY,
     CATEGORY_PROPERTY,
+    find_style_rules_page,
+    find_heading_block_id,
+    create_style_rules_page,
+    get_or_create_style_rules_page,
+    get_existing_rule_texts,
+    append_style_rules_to_page,
 )
 
 
@@ -287,3 +293,74 @@ def test_consolidate_style_rules_maps_indices_to_sources(monkeypatch):
 def test_consolidate_style_rules_returns_empty_for_no_candidates():
     import extract_terminology
     assert extract_terminology.consolidate_style_rules([], api_key="dummy") == []
+
+
+def test_find_style_rules_page_matches_exact_title():
+    notion = MagicMock()
+    notion.search.return_value = {
+        "results": [
+            {"id": "page1", "properties": {"title": {"title": [{"plain_text": "KRAFTON Japan 表記ルール"}]}}},
+        ]
+    }
+    assert find_style_rules_page(notion) == "page1"
+
+
+def test_find_style_rules_page_returns_none_when_not_found():
+    notion = MagicMock()
+    notion.search.return_value = {"results": []}
+    assert find_style_rules_page(notion) is None
+
+
+def test_find_heading_block_id_matches_heading_2():
+    notion = MagicMock()
+    notion.blocks.children.list.return_value = {
+        "results": [
+            {"id": "h1", "type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "要確認"}]}},
+            {"id": "h2", "type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "承認済み"}]}},
+        ],
+        "has_more": False,
+        "next_cursor": None,
+    }
+    assert find_heading_block_id(notion, "page1", "要確認") == "h1"
+
+
+def test_create_style_rules_page_creates_headings_and_returns_ids():
+    notion = MagicMock()
+    notion.pages.create.return_value = {"id": "newpage"}
+    notion.blocks.children.append.return_value = {"results": [{"id": "heading1"}, {"id": "heading2"}]}
+    page_id, confirm_id = create_style_rules_page(notion)
+    assert page_id == "newpage"
+    assert confirm_id == "heading1"
+    _, kwargs = notion.pages.create.call_args
+    assert kwargs["parent"] == {"type": "workspace", "workspace": True}
+
+
+def test_get_existing_rule_texts_extracts_first_line_only():
+    notion = MagicMock()
+    notion.blocks.children.list.return_value = {
+        "results": [
+            {"type": "bulleted_list_item", "bulleted_list_item": {
+                "rich_text": [{"plain_text": "ルールA\n例: x\n根拠: y"}]}},
+            {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "要確認"}]}},
+        ],
+        "has_more": False,
+        "next_cursor": None,
+    }
+    assert get_existing_rule_texts(notion, "page1") == {"ルールA"}
+
+
+def test_append_style_rules_to_page_skips_duplicates_and_uses_after():
+    notion = MagicMock()
+    rules = [{"rule": "既存ルール"}, {"rule": "新規ルール", "example": "", "sources": []}]
+    count = append_style_rules_to_page(notion, "page1", "heading1", rules, {"既存ルール"})
+    assert count == 1
+    _, kwargs = notion.blocks.children.append.call_args
+    assert kwargs["after"] == "heading1"
+    assert len(kwargs["children"]) == 1
+
+
+def test_append_style_rules_to_page_no_new_rules_skips_api_call():
+    notion = MagicMock()
+    count = append_style_rules_to_page(notion, "page1", "heading1", [{"rule": "既存"}], {"既存"})
+    assert count == 0
+    notion.blocks.children.append.assert_not_called()
