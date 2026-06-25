@@ -346,13 +346,8 @@ def find_heading_block_id(notion: Client, page_id: str, heading_text: str) -> st
     return None
 
 
-def create_style_rules_page(notion: Client) -> tuple[str, str]:
-    """「KRAFTON Japan 表記ルール」ページをワークスペース直下に新規作成する"""
-    page = notion.pages.create(
-        parent={"type": "workspace", "workspace": True},
-        properties={"title": {"title": [{"text": {"content": STYLE_RULES_PAGE_TITLE}}]}},
-    )
-    page_id = page["id"]
+def add_section_headings(notion: Client, page_id: str) -> str:
+    """ページに「要確認」「承認済み」見出しを追加し、「要確認」見出しのblock_idを返す"""
     res = notion.blocks.children.append(
         block_id=page_id,
         children=[
@@ -362,16 +357,37 @@ def create_style_rules_page(notion: Client) -> tuple[str, str]:
              "heading_2": {"rich_text": [{"text": {"content": APPROVED_HEADING}}]}},
         ],
     )
-    confirm_heading_id = res["results"][0]["id"]
+    return res["results"][0]["id"]
+
+
+def create_style_rules_page(notion: Client) -> tuple[str, str]:
+    """「KRAFTON Japan 表記ルール」ページをワークスペース直下に新規作成する。
+
+    Notion APIはInternal Integrationによるワークスペース直下への新規ページ作成を許可しない
+    （"insert_content"権限を持つPublic Integrationが必要）。そのため通常はユーザーが事前に
+    同名ページを手動作成し、インテグレーションと共有しておく運用を前提とする。このフォール
+    バックはその前提が崩れた場合にのみ呼ばれ、Notion側の権限エラーで失敗する可能性がある。
+    """
+    page = notion.pages.create(
+        parent={"type": "workspace", "workspace": True},
+        properties={"title": {"title": [{"text": {"content": STYLE_RULES_PAGE_TITLE}}]}},
+    )
+    page_id = page["id"]
+    confirm_heading_id = add_section_headings(notion, page_id)
     return page_id, confirm_heading_id
 
 
 def get_or_create_style_rules_page(notion: Client) -> tuple[str, str]:
-    """「KRAFTON Japan 表記ルール」ページを取得する。なければ新規作成する。"""
+    """「KRAFTON Japan 表記ルール」ページを取得する。なければ新規作成する。
+
+    既存ページが見つかっても「要確認」見出しがまだない場合（手動作成直後など）は追加する。
+    """
     page_id = find_style_rules_page(notion)
     if page_id:
         confirm_id = find_heading_block_id(notion, page_id, CONFIRM_HEADING)
-        return page_id, confirm_id
+        if confirm_id:
+            return page_id, confirm_id
+        return page_id, add_section_headings(notion, page_id)
     return create_style_rules_page(notion)
 
 
@@ -516,16 +532,20 @@ def main():
             print(f"  ❌ バッチ{i}で予期しないエラーが発生したためスキップ: {e}")
 
     print(f"\n📚 表記ルール候補 {len(style_candidates)}件を統合中...")
-    consolidated = consolidate_style_rules(style_candidates, anthropic_key)
+    try:
+        consolidated = consolidate_style_rules(style_candidates, anthropic_key)
 
-    if consolidated and not args.dry_run:
-        page_id, confirm_heading_id = get_or_create_style_rules_page(notion)
-        existing_texts = get_existing_rule_texts(notion, page_id)
-        added = append_style_rules_to_page(notion, page_id, confirm_heading_id, consolidated, existing_texts)
-        print(f"✅ 表記ルールを{added}件追記（重複{len(consolidated) - added}件はスキップ）")
-    elif consolidated:
-        for rule in consolidated:
-            print(f"  [DRY RUN] 表記ルール追記予定: {rule['rule']}")
+        if consolidated and not args.dry_run:
+            page_id, confirm_heading_id = get_or_create_style_rules_page(notion)
+            existing_texts = get_existing_rule_texts(notion, page_id)
+            added = append_style_rules_to_page(notion, page_id, confirm_heading_id, consolidated, existing_texts)
+            print(f"✅ 表記ルールを{added}件追記（重複{len(consolidated) - added}件はスキップ）")
+        elif consolidated:
+            for rule in consolidated:
+                print(f"  [DRY RUN] 表記ルール追記予定: {rule['rule']}")
+    except Exception as e:
+        print(f"  ❌ 表記ルールの統合・追記中に予期しないエラーが発生したためスキップ: {e}")
+        print("  （用語登録・チェックボックス更新は既に完了しているため失われていません）")
 
     print("\n" + "=" * 50)
     print(f"完了: 処理済みリリース {processed_count}件")

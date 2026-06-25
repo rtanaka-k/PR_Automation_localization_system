@@ -10,6 +10,7 @@ from extract_terminology import (
     CATEGORY_PROPERTY,
     find_style_rules_page,
     find_heading_block_id,
+    add_section_headings,
     create_style_rules_page,
     get_or_create_style_rules_page,
     get_existing_rule_texts,
@@ -333,6 +334,54 @@ def test_create_style_rules_page_creates_headings_and_returns_ids():
     assert confirm_id == "heading1"
     _, kwargs = notion.pages.create.call_args
     assert kwargs["parent"] == {"type": "workspace", "workspace": True}
+
+
+def test_get_or_create_style_rules_page_returns_existing_heading_when_present():
+    notion = MagicMock()
+    notion.search.return_value = {
+        "results": [
+            {"id": "existing_page", "properties": {"title": {"title": [{"plain_text": "KRAFTON Japan 表記ルール"}]}}},
+        ]
+    }
+    notion.blocks.children.list.return_value = {
+        "results": [
+            {"id": "h1", "type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "要確認"}]}},
+        ],
+        "has_more": False,
+        "next_cursor": None,
+    }
+    page_id, confirm_id = get_or_create_style_rules_page(notion)
+    assert page_id == "existing_page"
+    assert confirm_id == "h1"
+    notion.pages.create.assert_not_called()
+
+
+def test_get_or_create_style_rules_page_adds_headings_when_page_found_without_them():
+    notion = MagicMock()
+    notion.search.return_value = {
+        "results": [
+            {"id": "existing_page", "properties": {"title": {"title": [{"plain_text": "KRAFTON Japan 表記ルール"}]}}},
+        ]
+    }
+    notion.blocks.children.list.return_value = {"results": [], "has_more": False, "next_cursor": None}
+    notion.blocks.children.append.return_value = {"results": [{"id": "new_heading1"}, {"id": "new_heading2"}]}
+    page_id, confirm_id = get_or_create_style_rules_page(notion)
+    assert page_id == "existing_page"
+    assert confirm_id == "new_heading1"
+    notion.pages.create.assert_not_called()
+    _, kwargs = notion.blocks.children.append.call_args
+    assert kwargs["block_id"] == "existing_page"
+
+
+def test_get_or_create_style_rules_page_creates_when_not_found():
+    notion = MagicMock()
+    notion.search.return_value = {"results": []}
+    notion.pages.create.return_value = {"id": "brand_new_page"}
+    notion.blocks.children.append.return_value = {"results": [{"id": "heading1"}, {"id": "heading2"}]}
+    page_id, confirm_id = get_or_create_style_rules_page(notion)
+    assert page_id == "brand_new_page"
+    assert confirm_id == "heading1"
+    notion.pages.create.assert_called_once()
 
 
 def test_get_existing_rule_texts_extracts_first_line_only():
