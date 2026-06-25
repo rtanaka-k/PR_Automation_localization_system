@@ -202,3 +202,48 @@ def save_pending_term(notion: Client, term: dict, source_url: str) -> None:
     if source_url:
         props["抽出元リリース"] = {"url": source_url}
     notion.pages.create(parent={"database_id": NOTION_GLOSSARY_DB_ID}, properties=props)
+
+
+# ============================================================
+# Claude API: 用語・表記ルール抽出
+# ============================================================
+
+def parse_extraction_response(raw_text: str) -> dict:
+    """Claude応答から{terms, style_rules}のJSONを頑健に抽出する"""
+    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+    if not match:
+        return {"terms": [], "style_rules": []}
+    try:
+        data = json.loads(match.group())
+    except Exception:
+        return {"terms": [], "style_rules": []}
+    return {
+        "terms": data.get("terms") or [],
+        "style_rules": data.get("style_rules") or [],
+    }
+
+
+def extract_terms_and_style(text_ja: str, text_kr: str = "", text_en: str = "",
+                             api_key: str = "") -> dict:
+    """release本文（複数件を結合したテキスト）から用語・表記ルール候補を抽出する。
+    将来KR/EN原文付きで呼び出せるよう汎用シグネチャにしているが、今回はtext_jaのみ使用する。
+    """
+    client = Anthropic(api_key=api_key)
+    prompt = f"""以下は複数のプレスリリース本文です。それぞれから固有名詞の用語と文体・表記ルールを抽出してください。
+
+【本文】
+{text_ja}
+
+【出力形式】JSON1個のみ（説明不要）
+{{
+  "terms": [{{"ja": "日本語表記", "en": "英語表記（なければ空文字）", "category": "タイトル名|キャラクター|ゲームシステム|イベント・大会|組織・役職|その他"}}],
+  "style_rules": [{{"rule": "ルールの説明", "example": "Before→After、または本文からの引用例"}}]
+}}
+該当がなければそれぞれ空配列を返す。"""
+
+    res = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return parse_extraction_response(res.content[0].text)

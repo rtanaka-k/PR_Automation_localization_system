@@ -195,3 +195,45 @@ def test_save_pending_term_omits_optional_fields_when_absent():
     assert "カテゴリ" not in props
     assert "抽出元リリース" not in props
     assert "EN表記" not in props
+
+
+def test_parse_extraction_response_parses_clean_json():
+    from extract_terminology import parse_extraction_response
+    raw = '{"terms": [{"ja": "A"}], "style_rules": [{"rule": "R"}]}'
+    result = parse_extraction_response(raw)
+    assert result == {"terms": [{"ja": "A"}], "style_rules": [{"rule": "R"}]}
+
+
+def test_parse_extraction_response_strips_surrounding_text():
+    from extract_terminology import parse_extraction_response
+    raw = 'はい、結果はこちらです:\n{"terms": [], "style_rules": []}\nご確認ください。'
+    assert parse_extraction_response(raw) == {"terms": [], "style_rules": []}
+
+
+def test_parse_extraction_response_returns_empty_on_invalid_json():
+    from extract_terminology import parse_extraction_response
+    assert parse_extraction_response("不正な応答です") == {"terms": [], "style_rules": []}
+
+
+def test_parse_extraction_response_defaults_missing_keys():
+    from extract_terminology import parse_extraction_response
+    assert parse_extraction_response('{"terms": [{"ja": "A"}]}') == {
+        "terms": [{"ja": "A"}],
+        "style_rules": [],
+    }
+
+
+def test_extract_terms_and_style_calls_claude_and_parses(monkeypatch):
+    import extract_terminology
+
+    fake_response = MagicMock()
+    fake_response.content = [MagicMock(text='{"terms": [{"ja": "X"}], "style_rules": []}')]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+    monkeypatch.setattr(extract_terminology, "Anthropic", lambda api_key: fake_client)
+
+    result = extract_terminology.extract_terms_and_style("本文テキスト", api_key="dummy")
+    assert result == {"terms": [{"ja": "X"}], "style_rules": []}
+    fake_client.messages.create.assert_called_once()
+    _, kwargs = fake_client.messages.create.call_args
+    assert kwargs["model"] == extract_terminology.CLAUDE_MODEL
