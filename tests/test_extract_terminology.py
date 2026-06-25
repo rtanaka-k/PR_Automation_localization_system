@@ -237,3 +237,53 @@ def test_extract_terms_and_style_calls_claude_and_parses(monkeypatch):
     fake_client.messages.create.assert_called_once()
     _, kwargs = fake_client.messages.create.call_args
     assert kwargs["model"] == extract_terminology.CLAUDE_MODEL
+
+
+def test_build_consolidation_prompt_lists_candidates_with_indices():
+    from extract_terminology import build_consolidation_prompt
+    candidates = [
+        {"rule": "ルールA", "example": "x→y", "source_title": "T1", "source_url": "u1"},
+        {"rule": "ルールB", "example": "", "source_title": "T2", "source_url": "u2"},
+    ]
+    prompt = build_consolidation_prompt(candidates)
+    assert "0. ルールA（例: x→y）" in prompt
+    assert "1. ルールB" in prompt
+
+
+def test_parse_consolidation_response_parses_array():
+    from extract_terminology import parse_consolidation_response
+    raw = '[{"rule": "R", "source_indices": [0, 1]}]'
+    assert parse_consolidation_response(raw) == [{"rule": "R", "source_indices": [0, 1]}]
+
+
+def test_parse_consolidation_response_invalid_returns_empty():
+    from extract_terminology import parse_consolidation_response
+    assert parse_consolidation_response("no json here") == []
+
+
+def test_consolidate_style_rules_maps_indices_to_sources(monkeypatch):
+    import extract_terminology
+
+    candidates = [
+        {"rule": "ルールA", "example": "", "source_title": "T1", "source_url": "u1"},
+        {"rule": "ルールA重複", "example": "", "source_title": "T2", "source_url": "u2"},
+    ]
+    fake_response = MagicMock()
+    fake_response.content = [
+        MagicMock(text='[{"rule": "統合ルールA", "example": "", "source_indices": [0, 1]}]')
+    ]
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = fake_response
+    monkeypatch.setattr(extract_terminology, "Anthropic", lambda api_key: fake_client)
+
+    result = extract_terminology.consolidate_style_rules(candidates, api_key="dummy")
+    assert result == [{
+        "rule": "統合ルールA",
+        "example": "",
+        "sources": [{"title": "T1", "url": "u1"}, {"title": "T2", "url": "u2"}],
+    }]
+
+
+def test_consolidate_style_rules_returns_empty_for_no_candidates():
+    import extract_terminology
+    assert extract_terminology.consolidate_style_rules([], api_key="dummy") == []

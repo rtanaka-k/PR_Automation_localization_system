@@ -247,3 +247,65 @@ def extract_terms_and_style(text_ja: str, text_kr: str = "", text_en: str = "",
         messages=[{"role": "user", "content": prompt}],
     )
     return parse_extraction_response(res.content[0].text)
+
+
+# ============================================================
+# Claude API: 表記ルール統合
+# ============================================================
+
+def build_consolidation_prompt(candidates: list[dict]) -> str:
+    lines = []
+    for i, c in enumerate(candidates):
+        example = c.get("example", "")
+        suffix = f"（例: {example}）" if example else ""
+        lines.append(f"{i}. {c['rule']}{suffix}")
+    listing = "\n".join(lines)
+    return f"""以下は複数のプレスリリースから抽出された表記ルール候補です。類似・重複する候補を統合し、一意で明確な最終リストにしてください。
+
+【候補一覧】
+{listing}
+
+【出力形式】JSON配列のみ（説明不要）
+[
+  {{"rule": "統合後のルール説明", "example": "代表的な具体例（任意）", "source_indices": [統合元の番号のリスト]}}
+]"""
+
+
+def parse_consolidation_response(raw_text: str) -> list[dict]:
+    match = re.search(r"\[.*\]", raw_text, re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group())
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def consolidate_style_rules(candidates: list[dict], api_key: str) -> list[dict]:
+    """蓄積した表記ルール候補をClaude APIで統合し、根拠リンク付きの最終リストを返す"""
+    if not candidates:
+        return []
+
+    client = Anthropic(api_key=api_key)
+    prompt = build_consolidation_prompt(candidates)
+    res = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    consolidated = parse_consolidation_response(res.content[0].text)
+
+    rules = []
+    for item in consolidated:
+        sources = []
+        for idx in item.get("source_indices", []):
+            if 0 <= idx < len(candidates):
+                cand = candidates[idx]
+                sources.append({"title": cand["source_title"], "url": cand["source_url"]})
+        rules.append({
+            "rule": item.get("rule", ""),
+            "example": item.get("example", ""),
+            "sources": sources,
+        })
+    return rules
