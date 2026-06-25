@@ -100,3 +100,59 @@ def test_ensure_category_property_skips_when_exists():
     }
     ensure_category_property(notion)
     notion.data_sources.update.assert_not_called()
+
+
+def test_get_unprocessed_releases_paginates_and_filters():
+    from extract_terminology import get_unprocessed_releases
+    notion = MagicMock()
+    page1 = {
+        "id": "p1",
+        "properties": {
+            "タイトル（日本語）": {"title": [{"plain_text": "リリースA"}]},
+            "PR Times URL": {"url": "https://prtimes.jp/a"},
+        },
+    }
+    notion.data_sources.query.side_effect = [
+        {"results": [page1], "has_more": True, "next_cursor": "c1"},
+        {"results": [], "has_more": False, "next_cursor": None},
+    ]
+    releases = get_unprocessed_releases(notion)
+    assert releases == [{"page_id": "p1", "title": "リリースA", "url": "https://prtimes.jp/a"}]
+    assert notion.data_sources.query.call_count == 2
+    _, kwargs = notion.data_sources.query.call_args_list[0]
+    assert kwargs["filter"] == {"property": EXTRACTED_PROPERTY, "checkbox": {"equals": False}}
+
+
+def test_get_unprocessed_releases_respects_max_count():
+    from extract_terminology import get_unprocessed_releases
+    notion = MagicMock()
+    pages = [
+        {
+            "id": f"p{i}",
+            "properties": {
+                "タイトル（日本語）": {"title": [{"plain_text": f"リリース{i}"}]},
+                "PR Times URL": {"url": f"https://prtimes.jp/{i}"},
+            },
+        }
+        for i in range(5)
+    ]
+    notion.data_sources.query.return_value = {"results": pages, "has_more": False, "next_cursor": None}
+    releases = get_unprocessed_releases(notion, max_count=2)
+    assert len(releases) == 2
+
+
+def test_fetch_bodies_for_batch_skips_empty_body(monkeypatch):
+    import extract_terminology
+
+    def fake_fetch(url):
+        return "" if url == "https://prtimes.jp/empty" else f"本文 for {url}"
+
+    monkeypatch.setattr(extract_terminology, "fetch_article_body", fake_fetch)
+    releases = [
+        {"page_id": "p1", "title": "A", "url": "https://prtimes.jp/ok"},
+        {"page_id": "p2", "title": "B", "url": "https://prtimes.jp/empty"},
+    ]
+    result = extract_terminology.fetch_bodies_for_batch(releases)
+    assert len(result) == 1
+    assert result[0]["page_id"] == "p1"
+    assert result[0]["body"] == "本文 for https://prtimes.jp/ok"

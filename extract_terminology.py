@@ -120,3 +120,46 @@ def ensure_category_property(notion: Client) -> None:
             }
         },
     )
+
+
+# ============================================================
+# リリース取得
+# ============================================================
+
+def get_unprocessed_releases(notion: Client, max_count: int = 0) -> list[dict]:
+    """「用語抽出済み」が未チェックのreleaseをニュースリリースDBから取得する"""
+    releases = []
+    cursor = None
+    while True:
+        params = {
+            "data_source_id": NOTION_RELEASE_DATA_SOURCE_ID,
+            "page_size": 100,
+            "filter": {"property": EXTRACTED_PROPERTY, "checkbox": {"equals": False}},
+        }
+        if cursor:
+            params["start_cursor"] = cursor
+        res = notion.data_sources.query(**params)
+        for page in res["results"]:
+            props = page["properties"]
+            title_items = props.get("タイトル（日本語）", {}).get("title", [])
+            title = "".join(t.get("plain_text", "") for t in title_items)
+            url = props.get("PR Times URL", {}).get("url") or ""
+            releases.append({"page_id": page["id"], "title": title, "url": url})
+            if max_count and len(releases) >= max_count:
+                return releases
+        if not res.get("has_more"):
+            break
+        cursor = res["next_cursor"]
+    return releases
+
+
+def fetch_bodies_for_batch(releases: list[dict]) -> list[dict]:
+    """各releaseのPR Times URLから本文を再取得する。取得失敗分はログを出して除外する"""
+    result = []
+    for release in releases:
+        body = fetch_article_body(release["url"]) if release["url"] else ""
+        if not body:
+            print(f"  ⚠️  本文取得失敗のためスキップ: {release['title']}")
+            continue
+        result.append({**release, "body": body})
+    return result
