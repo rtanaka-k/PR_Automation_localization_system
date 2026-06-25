@@ -411,3 +411,120 @@ def append_style_rules_to_page(notion: Client, page_id: str, confirm_heading_id:
         return 0
     notion.blocks.children.append(block_id=page_id, children=new_blocks, after=confirm_heading_id)
     return len(new_blocks)
+
+
+# ============================================================
+# バッチ処理オーケストレーション
+# ============================================================
+
+def process_batch(batch: list[dict], known_ja: set[str], style_candidates: list[dict],
+                   notion: Client, api_key: str, dry_run: bool) -> bool:
+    """1バッチ（本文取得済みrelease群）を処理する。
+    Claude API呼び出しが2回失敗した場合はFalseを返し、呼び出し側は「用語抽出済み」をONにしない。
+    """
+    combined_text = "\n\n---\n\n".join(r["body"] for r in batch)
+
+    result = None
+    for attempt in range(2):
+        try:
+            result = extract_terms_and_style(combined_text, api_key=api_key)
+            break
+        except Exception as e:
+            print(f"  ⚠️  Claude API呼び出し失敗（{attempt + 1}/2回目）: {e}")
+    if result is None:
+        print("  ❌ このバッチをスキップします")
+        return False
+
+    # バッチ内の代表releaseを抽出元として記録する（10件分の本文を1回で渡すため、
+    # 用語・ルールごとの厳密な出典追跡はスコープ外という設計判断に基づく簡略化）
+    representative = batch[0]
+
+    new_terms = dedupe_new_terms(result["terms"], known_ja)
+    for term in new_terms:
+        if dry_run:
+            print(f"  [DRY RUN] 用語登録予定: {term.get('ja')}")
+            continue
+        try:
+            save_pending_term(notion, term, representative["url"])
+            print(f"  📝 用語登録: {term.get('ja')}")
+        except Exception as e:
+            print(f"  ⚠️  用語登録失敗（スキップ）: {term.get('ja')} ({e})")
+
+    for rule in result["style_rules"]:
+        style_candidates.append({
+            "rule": rule.get("rule", ""),
+            "example": rule.get("example", ""),
+            "source_title": representative["title"],
+            "source_url": representative["url"],
+        })
+
+    if not dry_run:
+        for release in batch:
+            notion.pages.update(
+                page_id=release["page_id"],
+                properties={EXTRACTED_PROPERTY: {"checkbox": True}},
+            )
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="PR Timesコーパスから用語・表記ルールを抽出")
+    parser.add_argument("--max", type=int, default=0, help="処理するリリース件数の上限（0=全件）")
+    parser.add_argument("--batch-size", type=int, default=10, help="Claude APIに渡す1バッチあたりのリリース件数")
+    parser.add_argument("--dry-run", action="store_true", help="Notionへの書き込みをせずプレビュー")
+    args = parser.parse_args()
+
+    notion_token = os.environ.get("NOTION_TOKEN")
+    anthropic_key = os.environ.get("ANTHROPIC_KEY")
+    if not notion_token or not anthropic_key:
+        print("❌ 環境変数 NOTION_TOKEN / ANTHROPIC_KEY が設定されていません")
+        sys.exit(1)
+
+    notion = Client(auth=notion_token)
+
+    print("🔧 Notionスキーマを確認中...")
+    ensure_checkbox_property(notion)
+    ensure_category_property(notion)
+
+    print("📡 未処理のリリースを取得中...")
+    releases = get_unprocessed_releases(notion, max_count=args.max)
+    if not releases:
+        print("✅ 未処理のリリースはありません")
+        return
+    print(f"✅ {len(releases)}件の未処理リリース")
+
+    print("🔍 既存の用語集を読み込み中...")
+    known_ja = get_existing_term_set(notion)
+    print(f"   既存用語: {len(known_ja)}件")
+
+    batches = build_batches(releases, args.batch_size)
+    style_candidates: list[dict] = []
+    processed_count = 0
+
+    for i, batch in enumerate(batches, 1):
+        print(f"\n[バッチ {i}/{len(batches)}] {len(batch)}件")
+        ready = fetch_bodies_for_batch(batch)
+        if not ready:
+            print("  ⚠️  本文を取得できたreleaseがないためスキップ")
+            continue
+        if process_batch(ready, known_ja, style_candidates, notion, anthropic_key, args.dry_run):
+            processed_count += len(ready)
+
+    print(f"\n📚 表記ルール候補 {len(style_candidates)}件を統合中...")
+    consolidated = consolidate_style_rules(style_candidates, anthropic_key)
+
+    if consolidated and not args.dry_run:
+        page_id, confirm_heading_id = get_or_create_style_rules_page(notion)
+        existing_texts = get_existing_rule_texts(notion, page_id)
+        added = append_style_rules_to_page(notion, page_id, confirm_heading_id, consolidated, existing_texts)
+        print(f"✅ 表記ルールを{added}件追記（重複{len(consolidated) - added}件はスキップ）")
+    elif consolidated:
+        for rule in consolidated:
+            print(f"  [DRY RUN] 表記ルール追記予定: {rule['rule']}")
+
+    print("\n" + "=" * 50)
+    print(f"完了: 処理済みリリース {processed_count}件")
+
+
+if __name__ == "__main__":
+    main()

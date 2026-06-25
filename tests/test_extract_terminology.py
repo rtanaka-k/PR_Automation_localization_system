@@ -364,3 +364,67 @@ def test_append_style_rules_to_page_no_new_rules_skips_api_call():
     count = append_style_rules_to_page(notion, "page1", "heading1", [{"rule": "既存"}], {"既存"})
     assert count == 0
     notion.blocks.children.append.assert_not_called()
+
+
+def test_process_batch_retries_once_then_skips_on_repeated_failure(monkeypatch):
+    import extract_terminology
+    monkeypatch.setattr(
+        extract_terminology, "extract_terms_and_style",
+        MagicMock(side_effect=[Exception("fail1"), Exception("fail2")]),
+    )
+    notion = MagicMock()
+    batch = [{"page_id": "p1", "title": "T", "url": "u1", "body": "本文"}]
+    ok = extract_terminology.process_batch(batch, set(), [], notion, "key", dry_run=False)
+    assert ok is False
+    notion.pages.update.assert_not_called()
+
+
+def test_process_batch_succeeds_and_marks_checkbox(monkeypatch):
+    import extract_terminology
+    fake_extract = MagicMock(return_value={
+        "terms": [{"ja": "新語", "category": "タイトル名"}],
+        "style_rules": [{"rule": "ルールX", "example": ""}],
+    })
+    monkeypatch.setattr(extract_terminology, "extract_terms_and_style", fake_extract)
+    monkeypatch.setattr(extract_terminology, "save_pending_term", MagicMock())
+    notion = MagicMock()
+    batch = [{"page_id": "p1", "title": "T", "url": "u1", "body": "本文"}]
+    known_ja = set()
+    style_candidates = []
+    ok = extract_terminology.process_batch(batch, known_ja, style_candidates, notion, "key", dry_run=False)
+    assert ok is True
+    assert "新語" in known_ja
+    assert style_candidates == [{"rule": "ルールX", "example": "", "source_title": "T", "source_url": "u1"}]
+    notion.pages.update.assert_called_once_with(
+        page_id="p1", properties={extract_terminology.EXTRACTED_PROPERTY: {"checkbox": True}},
+    )
+
+
+def test_process_batch_dry_run_skips_writes(monkeypatch):
+    import extract_terminology
+    fake_extract = MagicMock(return_value={"terms": [{"ja": "新語"}], "style_rules": []})
+    monkeypatch.setattr(extract_terminology, "extract_terms_and_style", fake_extract)
+    save_mock = MagicMock()
+    monkeypatch.setattr(extract_terminology, "save_pending_term", save_mock)
+    notion = MagicMock()
+    batch = [{"page_id": "p1", "title": "T", "url": "u1", "body": "本文"}]
+    ok = extract_terminology.process_batch(batch, set(), [], notion, "key", dry_run=True)
+    assert ok is True
+    save_mock.assert_not_called()
+    notion.pages.update.assert_not_called()
+
+
+def test_process_batch_continues_when_one_term_save_fails(monkeypatch):
+    import extract_terminology
+    fake_extract = MagicMock(return_value={
+        "terms": [{"ja": "用語1"}, {"ja": "用語2"}], "style_rules": [],
+    })
+    monkeypatch.setattr(extract_terminology, "extract_terms_and_style", fake_extract)
+    save_mock = MagicMock(side_effect=[Exception("notion error"), None])
+    monkeypatch.setattr(extract_terminology, "save_pending_term", save_mock)
+    notion = MagicMock()
+    batch = [{"page_id": "p1", "title": "T", "url": "u1", "body": "本文"}]
+    ok = extract_terminology.process_batch(batch, set(), [], notion, "key", dry_run=False)
+    assert ok is True
+    assert save_mock.call_count == 2
+    notion.pages.update.assert_called_once()
