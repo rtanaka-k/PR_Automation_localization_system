@@ -163,3 +163,42 @@ def fetch_bodies_for_batch(releases: list[dict]) -> list[dict]:
             continue
         result.append({**release, "body": body})
     return result
+
+
+# ============================================================
+# 用語集DB
+# ============================================================
+
+def get_existing_term_set(notion: Client) -> set[str]:
+    """用語集DBの既存エントリ（pending＋approved全件）の日本語表記集合を取得する"""
+    known = set()
+    cursor = None
+    while True:
+        params = {"data_source_id": NOTION_GLOSSARY_DATA_SOURCE_ID, "page_size": 100}
+        if cursor:
+            params["start_cursor"] = cursor
+        res = notion.data_sources.query(**params)
+        for page in res["results"]:
+            title_items = page["properties"].get("日本語表記", {}).get("title", [])
+            ja = "".join(t.get("plain_text", "") for t in title_items)
+            if ja:
+                known.add(ja)
+        if not res.get("has_more"):
+            break
+        cursor = res["next_cursor"]
+    return known
+
+
+def save_pending_term(notion: Client, term: dict, source_url: str) -> None:
+    """新出語句をpendingステータスで用語集DBに登録する"""
+    props = {
+        "日本語表記": {"title": [{"text": {"content": term["ja"]}}]},
+        "ステータス": {"select": {"name": "pending"}},
+    }
+    if term.get("en"):
+        props["EN表記"] = {"rich_text": [{"text": {"content": term["en"]}}]}
+    if term.get("category"):
+        props[CATEGORY_PROPERTY] = {"select": {"name": term["category"]}}
+    if source_url:
+        props["抽出元リリース"] = {"url": source_url}
+    notion.pages.create(parent={"database_id": NOTION_GLOSSARY_DB_ID}, properties=props)

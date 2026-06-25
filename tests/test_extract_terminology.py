@@ -156,3 +156,42 @@ def test_fetch_bodies_for_batch_skips_empty_body(monkeypatch):
     assert len(result) == 1
     assert result[0]["page_id"] == "p1"
     assert result[0]["body"] == "本文 for https://prtimes.jp/ok"
+
+
+def test_get_existing_term_set_collects_titles():
+    from extract_terminology import get_existing_term_set
+    notion = MagicMock()
+    notion.data_sources.query.return_value = {
+        "results": [
+            {"properties": {"日本語表記": {"title": [{"plain_text": "クラフトン"}]}}},
+            {"properties": {"日本語表記": {"title": [{"plain_text": "インゾイ"}]}}},
+        ],
+        "has_more": False,
+        "next_cursor": None,
+    }
+    assert get_existing_term_set(notion) == {"クラフトン", "インゾイ"}
+
+
+def test_save_pending_term_includes_category_and_source():
+    from extract_terminology import save_pending_term
+    notion = MagicMock()
+    term = {"ja": "インゾイ", "en": "inZOI", "category": "タイトル名"}
+    save_pending_term(notion, term, "https://prtimes.jp/x")
+    _, kwargs = notion.pages.create.call_args
+    props = kwargs["properties"]
+    assert props["日本語表記"]["title"][0]["text"]["content"] == "インゾイ"
+    assert props["EN表記"]["rich_text"][0]["text"]["content"] == "inZOI"
+    assert props["カテゴリ"]["select"]["name"] == "タイトル名"
+    assert props["抽出元リリース"]["url"] == "https://prtimes.jp/x"
+    assert props["ステータス"]["select"]["name"] == "pending"
+
+
+def test_save_pending_term_omits_optional_fields_when_absent():
+    from extract_terminology import save_pending_term
+    notion = MagicMock()
+    save_pending_term(notion, {"ja": "X"}, "")
+    _, kwargs = notion.pages.create.call_args
+    props = kwargs["properties"]
+    assert "カテゴリ" not in props
+    assert "抽出元リリース" not in props
+    assert "EN表記" not in props
