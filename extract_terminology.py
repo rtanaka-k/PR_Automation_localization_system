@@ -90,3 +90,33 @@ def format_rule_block_text(rule: dict) -> str:
 def extract_rule_statement(block_text: str) -> str:
     """format_rule_block_textで整形したテキストからルール文（1行目）だけを取り出す"""
     return block_text.split("\n", 1)[0]
+
+
+# ============================================================
+# Notionスキーマ管理
+# ============================================================
+
+def ensure_checkbox_property(notion: Client) -> None:
+    """ニュースリリースDBに「用語抽出済み」チェックボックスがなければ追加する"""
+    ds = notion.data_sources.retrieve(data_source_id=NOTION_RELEASE_DATA_SOURCE_ID)
+    if EXTRACTED_PROPERTY in ds.get("properties", {}):
+        return
+    notion.data_sources.update(
+        data_source_id=NOTION_RELEASE_DATA_SOURCE_ID,
+        properties={EXTRACTED_PROPERTY: {"checkbox": {}}},
+    )
+
+
+def ensure_category_property(notion: Client) -> None:
+    """用語集DBに「カテゴリ」selectプロパティがなければ追加する"""
+    ds = notion.data_sources.retrieve(data_source_id=NOTION_GLOSSARY_DATA_SOURCE_ID)
+    if CATEGORY_PROPERTY in ds.get("properties", {}):
+        return
+    notion.data_sources.update(
+        data_source_id=NOTION_GLOSSARY_DATA_SOURCE_ID,
+        properties={
+            CATEGORY_PROPERTY: {
+                "select": {"options": [{"name": c} for c in TERM_CATEGORY_OPTIONS]}
+            }
+        },
+    )

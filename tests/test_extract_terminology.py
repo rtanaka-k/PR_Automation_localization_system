@@ -1,8 +1,13 @@
+from unittest.mock import MagicMock
 from extract_terminology import (
     build_batches,
     dedupe_new_terms,
     format_rule_block_text,
     extract_rule_statement,
+    ensure_checkbox_property,
+    ensure_category_property,
+    EXTRACTED_PROPERTY,
+    CATEGORY_PROPERTY,
 )
 
 
@@ -58,3 +63,40 @@ def test_format_rule_block_text_minimal():
 def test_extract_rule_statement_takes_first_line():
     block_text = "ルールA\n例: x\n根拠: y"
     assert extract_rule_statement(block_text) == "ルールA"
+
+
+def test_ensure_checkbox_property_skips_when_exists():
+    notion = MagicMock()
+    notion.data_sources.retrieve.return_value = {
+        "properties": {EXTRACTED_PROPERTY: {"type": "checkbox"}}
+    }
+    ensure_checkbox_property(notion)
+    notion.data_sources.update.assert_not_called()
+
+
+def test_ensure_checkbox_property_adds_when_missing():
+    notion = MagicMock()
+    notion.data_sources.retrieve.return_value = {"properties": {}}
+    ensure_checkbox_property(notion)
+    notion.data_sources.update.assert_called_once()
+    _, kwargs = notion.data_sources.update.call_args
+    assert kwargs["properties"][EXTRACTED_PROPERTY] == {"checkbox": {}}
+
+
+def test_ensure_category_property_adds_when_missing():
+    notion = MagicMock()
+    notion.data_sources.retrieve.return_value = {"properties": {}}
+    ensure_category_property(notion)
+    _, kwargs = notion.data_sources.update.call_args
+    options = kwargs["properties"][CATEGORY_PROPERTY]["select"]["options"]
+    assert {"name": "タイトル名"} in options
+    assert len(options) == 6
+
+
+def test_ensure_category_property_skips_when_exists():
+    notion = MagicMock()
+    notion.data_sources.retrieve.return_value = {
+        "properties": {CATEGORY_PROPERTY: {"type": "select"}}
+    }
+    ensure_category_property(notion)
+    notion.data_sources.update.assert_not_called()
