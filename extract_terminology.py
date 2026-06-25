@@ -439,7 +439,7 @@ def process_batch(batch: list[dict], known_ja: set[str], style_candidates: list[
     # 用語・ルールごとの厳密な出典追跡はスコープ外という設計判断に基づく簡略化）
     representative = batch[0]
 
-    new_terms = dedupe_new_terms(result["terms"], known_ja)
+    new_terms = dedupe_new_terms(result.get("terms", []), known_ja)
     for term in new_terms:
         if dry_run:
             print(f"  [DRY RUN] 用語登録予定: {term.get('ja')}")
@@ -450,7 +450,7 @@ def process_batch(batch: list[dict], known_ja: set[str], style_candidates: list[
         except Exception as e:
             print(f"  ⚠️  用語登録失敗（スキップ）: {term.get('ja')} ({e})")
 
-    for rule in result["style_rules"]:
+    for rule in result.get("style_rules", []):
         style_candidates.append({
             "rule": rule.get("rule", ""),
             "example": rule.get("example", ""),
@@ -485,6 +485,8 @@ def main():
     print("🔧 Notionスキーマを確認中...")
     ensure_checkbox_property(notion)
     ensure_category_property(notion)
+    if args.dry_run:
+        print("  ℹ️  [DRY RUN] スキーマプロパティの追加（存在しない場合のみ）は実行されます。用語登録・チェックボックス更新・表記ルール追記は行いません。")
 
     print("📡 未処理のリリースを取得中...")
     releases = get_unprocessed_releases(notion, max_count=args.max)
@@ -503,12 +505,15 @@ def main():
 
     for i, batch in enumerate(batches, 1):
         print(f"\n[バッチ {i}/{len(batches)}] {len(batch)}件")
-        ready = fetch_bodies_for_batch(batch)
-        if not ready:
-            print("  ⚠️  本文を取得できたreleaseがないためスキップ")
-            continue
-        if process_batch(ready, known_ja, style_candidates, notion, anthropic_key, args.dry_run):
-            processed_count += len(ready)
+        try:
+            ready = fetch_bodies_for_batch(batch)
+            if not ready:
+                print("  ⚠️  本文を取得できたreleaseがないためスキップ")
+                continue
+            if process_batch(ready, known_ja, style_candidates, notion, anthropic_key, args.dry_run):
+                processed_count += len(ready)
+        except Exception as e:
+            print(f"  ❌ バッチ{i}で予期しないエラーが発生したためスキップ: {e}")
 
     print(f"\n📚 表記ルール候補 {len(style_candidates)}件を統合中...")
     consolidated = consolidate_style_rules(style_candidates, anthropic_key)
