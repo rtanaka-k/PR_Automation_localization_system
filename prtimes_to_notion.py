@@ -106,9 +106,10 @@ def fetch_article_body(url: str) -> str:
             soup.select_one("div.press-release-body-v3-0-0")
             or soup.select_one("article")
         )
-        if body_el:
-            return body_el.get_text(separator="\n", strip=True)
-        return ""
+        result = body_el.get_text(separator="\n", strip=True) if body_el else ""
+        del soup
+        del r
+        return result
     except Exception as e:
         print(f"  ⚠️  本文取得失敗: {e}")
         return ""
